@@ -1,72 +1,180 @@
+#include"common_def.h"
+
+ULONG compensateLightInBlocks(Mat &image, Mat* dstImg, INT blockSize);
+ULONG compensateLightReferenceWhite(Mat &srcImg, Mat* dstImg);
+
+int main()
+{
+	
+	Mat srcImg;
+	Mat grayImg;
+	Mat blocksImg;
+	Mat referenceWhite;
+
+	srcImg = imread("timg.jpg");
+	cvtColor(srcImg, grayImg, CV_RGB2GRAY);
+
+	compensateLightInBlocks(grayImg, &blocksImg, 10);
+	imshow("blocksImg", blocksImg);
+
+	compensateLightReferenceWhite(grayImg, &referenceWhite);
+	imshow("referenceWhite", referenceWhite);
+
+	while (true)
+	{
+		waitKey(0);
+	}
+
+	return 0;
+}
+
 /*****************************************************************************
- 函 数 名  : HSEG_GetBindImgWithLocalThreshold
- 功能描述  : 局部阈值 *使用均值和标准差作为判定依据 *输入参数包括邻域大小，均值系数，以及标准差系数
- 输入参数  : 
- 输出参数  : 
- 返 回 值  : 
- 调用函数  : 
- 被调函数  : 
- 
+ 函 数 名  : compensateLightInBlocks
+ 功能描述  : 不均匀光照补偿，基于领域
+ 输入参数  : Mat &image,   灰度图像
+             INT blockSize 块大小
+ 输出参数  : Mat* dstImg,  输出图像
+
  修改历史      :
   1.日    期   : 2018年6月5日
-    作    者   : ccy0739
+    作    者   : chengcy
     修改内容   : 新生成函数
 
 *****************************************************************************/
-ULONG HSEG_GetBindImgWithLocalThreshold(Mat& srcImg, Mat* bindImg, INT windownSize, DOUBLE meanParam, DOUBLE stadevPara)
+ULONG compensateLightInBlocks(Mat &image, Mat* dstImg, INT blockSize)
+{
+    if (!image.data)
+    {
+        return HCOM_ERR;
+    }
+
+    /* 图像整体灰度均值 */
+    DOUBLE average = mean(image)[0];
+
+    /* 分块 */
+    INT newRows = (INT)ceil(DOUBLE(image.rows) / DOUBLE(blockSize));
+    INT newCols = (INT)ceil(DOUBLE(image.cols) / DOUBLE(blockSize));
+    Mat blockImage;
+    blockImage = Mat::zeros(newRows, newCols, CV_64FC1);
+
+    INT minRow;
+    INT maxRow;
+    INT minCol;
+    INT maxCol;
+    DOUBLE temaver;
+    Mat imageROI;
+
+    /* 求每个块内的均值 */
+    for (INT i = 0; i < newRows; i++)
+    {
+        for (INT j = 0; j < newCols; j++)
+        {
+            minRow = i * blockSize;
+            maxRow = (i + 1) * blockSize;
+            if (maxRow > image.rows)
+            {
+                maxRow = image.rows;
+            }
+
+            minCol = j * blockSize;
+            maxCol = (j + 1) * blockSize;
+            if (maxCol > image.cols)
+            {
+                maxCol = image.cols;
+            }
+
+            imageROI = image(Range(minRow, maxRow), Range(minCol, maxCol));
+            temaver = mean(imageROI)[0];
+            blockImage.at<DOUBLE>(i, j) = temaver;
+        }
+    }
+
+    blockImage = blockImage - average;
+
+    Mat resizeBlockImage;
+    resize(blockImage, resizeBlockImage, image.size(), INTER_CUBIC);
+
+    Mat doubleImage;
+    image.convertTo(doubleImage, CV_64FC1);
+
+    *dstImg = doubleImage - resizeBlockImage;
+    (*dstImg).convertTo(*dstImg, CV_8UC1);  
+
+    return HCOM_OK;
+}
+
+/*****************************************************************************
+ 函 数 名  : CompensateLightReferenceWhite
+ 功能描述  : 基于参考白的不均匀光照补偿
+ 输入参数  : Mat &image,   灰度图像
+             INT blockSize 块大小
+ 输出参数  : Mat* dstImg,  输出图像
+
+ 修改历史      :
+  1.日    期   : 2018年6月11日
+    作    者   : chengcy
+    修改内容   : 新生成函数
+
+*****************************************************************************/
+ULONG compensateLightReferenceWhite(Mat &srcImg, Mat* dstImg)
 {
 
-    if (!srcImg.data)
+    if (!srcImg.data || CV_8UC1 != srcImg.type())
     {
-        PRINT_ERROR(HSEG_ERROR_NO_IMAGE);
-        return HSEG_ERROR_NO_IMAGE;
+        return HCOM_ERR;
     }
-    
-    *bindImg = cv::Mat::zeros(srcImg.size(), srcImg.type());
 
-    UCHAR* srcImgData = srcImg.data;
-    UCHAR* bindImgData = bindImg->data;
-    DOUBLE deta = 0.0;
-    DOUBLE mean = 0.0;
-    DOUBLE data = 0.0;
+    const DOUBLE whiteLevel = 0.01;
+    ULONG cols = srcImg.cols;
+    ULONG rows = srcImg.rows;
 
-    /* 跳过首尾行列 */
-    for (INT col = windownSize / 2; col < (srcImg.cols - windownSize / 2); col++)
+    /* 统计直方图 */
+    INT histogram[256] = {0};
+    UCHAR* grayData = srcImg.data;
+    for(ULONG i = 0; i < cols; i++)
+    {     
+        for(ULONG j = 0;j < rows; j++)
+        { 
+            histogram[grayData[i + j * cols]] ++;
+        }
+    }
+
+    ULONG refNum =0;
+    ULONG totalNum = rows * cols ;
+    ULONG grayVal;
+
+    //前whiteLevel的高灰度像素
+    for(ULONG i = 0;i < 256; i++)
     {
-        for (INT row = windownSize / 2; row < (srcImg.rows - windownSize / 2); row++)
+        if((DOUBLE)(refNum / totalNum) < whiteLevel) 
         {
-            deta = 0.0;
-            mean = 0.0; 
-            data = (DOUBLE)(srcImgData[col + row * srcImg.cols]);
+            refNum += histogram[255-i]; 
+            grayVal = i;
+        }
+        else
+            break;
+    }
 
-            /* 求邻域内均值和标准差 */
-            for (INT i = -(windownSize / 2); i < windownSize / 2 + 1; i++)
-            {
-                for (INT j = -(windownSize / 2); j < windownSize / 2 + 1; j++)
-                {
-                    mean += srcImgData[(row + i) * srcImg.cols + col + j];
-                }
-            }
-            mean /= (DOUBLE)(windownSize * windownSize);
-            
-            for (INT i = -(windownSize / 2); i <= windownSize / 2; i++)
-            {
-                for (INT j = -(windownSize / 2); j <= windownSize / 2; j++)
-                {
-                    deta += (srcImgData[(row + i) * srcImg.cols + col + j] - mean)
-                        * (srcImgData[(row + i) * srcImg.cols + col + j] - mean);
-                }
-            }
+    //参考亮度平均值
+    ULONG aveGray = 0;
+    refNum =0;
+    for(ULONG i = 255;i >= 255 - grayVal; i--)
+    {
+        aveGray += histogram[i] * i;  //总的像素的个数*灰度值
+        refNum += histogram[i];     //总的像素数
+    }
+    aveGray /=refNum;
 
-            deta /= (DOUBLE)(windownSize * windownSize);
-            deta = sqrt(deta);
+    //光线补偿的系数
+    DOUBLE coe = 255.0 / (DOUBLE )aveGray;
 
-            if (data> meanParam * mean && data > stadevPara * deta)
-            {
-
-                bindImgData[col + row * srcImg.cols] = 255;
-            }
-        
+    *dstImg = srcImg.clone();
+    UCHAR* dstData = dstImg->data;
+    for(ULONG i = 0; i < cols; i++)
+    {     
+        for(ULONG j = 0;j < rows; j++)
+        {
+            dstData[i + j * cols] = saturate_cast<UCHAR>(coe * dstData[i + j * cols] + 0.5);
         }
     }
 
